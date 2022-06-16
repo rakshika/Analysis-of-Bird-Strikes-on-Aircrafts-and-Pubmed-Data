@@ -1,0 +1,331 @@
+---
+title: "Practicum 2 - Part 1"
+author:
+- Rakshika Raju, raju.r@northeastern.edu
+- Pranith Rao Nayeneni, nayeneni.p@northeastern.edu
+output: html_notebook
+---
+
+### Installing and loading of required packages
+```{r}
+#install.packages("RSQLite")
+#install.packages("XML")
+
+library(XML)
+library(RSQLite)
+```
+
+### Connecting to the local database
+```{r}
+dbcon <- dbConnect(RSQLite::SQLite(), "PubMed.db")
+```
+
+### ERD diagram
+![](https://i.imgur.com/HYtZbsa.png)
+
+```{sql connection=dbcon}
+PRAGMA foreign_keys = ON;
+```
+
+### Dropping tables if they exist
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Author_Article;
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Author;
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Article;
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Journal;
+```
+
+### Creating tables
+```{sql connection=dbcon}
+CREATE TABLE Author (
+aid INTEGER NOT NULL,
+first_name TEXT NOT NULL,
+last_name TEXT NOT NULL,
+initial TEXT NOT NULL,
+affiliation TEXT NOT NULL,
+PRIMARY KEY (aid)
+);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Article (
+article_id INTEGER NOT NULL,
+title TEXT NOT NULL,
+article_year INTEGER NOT NULL,
+article_month INTEGER NOT NULL,
+jid TEXT NOT NULL,
+PRIMARY KEY (article_id),
+FOREIGN KEY (jid) REFERENCES Journal (jid)
+);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Author_Article (
+aid INTEGER NOT NULL,
+article_id INTEGER NOT NULL,
+FOREIGN KEY (aid) REFERENCES Author (aid),
+FOREIGN KEY (article_id) REFERENCES Article (article_id)
+);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Journal (
+jid TEXT NOT NULL,
+title TEXT NOT NULL,
+volume INTEGER NOT NULL,
+issue INTEGER NOT NULL,
+pub_date DATE NOT NULL,
+PRIMARY KEY (jid)
+);
+```
+
+#### Reading the xml file and getting the root node after parsing the XML
+```{r}
+xmlFile <- "pubmed_sample.xml"
+xmlDOM <- xmlParse(file = xmlFile)
+root <- xmlRoot(xmlDOM)
+```
+
+#### Creating the required dataframes
+```{r}
+numOfRows <- xmlSize(root)
+
+journal.df <- data.frame (jid = character(),
+                          title = character(),
+                          volume = numeric(),
+                          issue = numeric(),
+                          pub_date = character(),
+                          stringsAsFactors = F)
+
+article.df <- data.frame (article_id = numeric(),
+                          title = character(),
+                          article_year = numeric(),
+                          article_month = numeric(),
+                          jid = character(),
+                          stringsAsFactors = F)
+
+author.df <- data.frame (aid = numeric(),
+                          first_name = character(),
+                          last_name = character(),
+                          initial = character(),
+                          affiliation = character(),
+                          stringsAsFactors = F)
+
+author_article.df <- data.frame (article_id = numeric(),
+                          aid = numeric(),
+                          stringsAsFactors = F)
+```
+
+### Private functions
+```{r}
+parseJournal <- function (aJournalNode)
+{
+  # parse the Author Name into its components
+  issn <- xmlValue(aJournalNode[[1]])
+  title <- xmlValue(aJournalNode[[3]])
+  volume <- xmlValue(aJournalNode[[2]]['Volume'][[1]])
+  issue <- xmlValue(aJournalNode[[2]]['Issue'][[1]])
+  
+  newAuth.df <- data.frame(issn,
+                           title,
+                           volume,
+                           issue,
+                           stringsAsFactors = F)
+  
+  return(newAuth.df)
+}
+```
+
+```{r}
+parseAuthor <- function (aAuthorNode)
+{
+  # parse the Author Name into its components
+  fname <- xmlValue(aAuthorNode['ForeName'][[1]])
+  lname <- xmlValue(aAuthorNode['LastName'][[1]])
+  initial <- xmlValue(aAuthorNode['Initials'][[1]])
+  if (length(aAuthorNode['Affiliation']) == 0) {
+    affiliation <- "NULL"
+  } else {
+    affiliation <- xmlValue(aAuthorNode['Affiliation'][[1]])
+  }
+  newAuth.df <- data.frame(fname,
+                           lname,
+                           initial,
+                           affiliation,
+                           stringsAsFactors = F)
+  
+  return(newAuth.df)
+}
+```
+
+```{r}
+rowExists <- function (aRow, aDF)
+{
+  # check if that row is already in the data frame
+  n <- nrow(aDF)
+  c <- ncol(aDF)
+  
+  if (n == 0)
+  {
+    # data frame is empty, so can't exist
+    return(0)
+  }
+  
+  for (a in 1:n)
+  {
+    # check if all columns match for a row; ignore the pk column
+    if (all(aDF[a,2:4] == aRow[1,1:3]))
+    {
+      return(a)
+      
+    }
+  }
+  
+  # none matched
+  return(0)
+}
+```
+
+```{r}
+rowExistsJ <- function (aRow, aDF)
+{
+  # check if that row is already in the data frame
+  n <- nrow(aDF)
+  c <- ncol(aDF)
+  
+  if (n == 0)
+  {
+    return(0)
+  }
+  
+  for (a in 1:n)
+  {
+    if (aDF[a,1] == aRow[1,1])
+    {
+      return(a)
+      
+    }
+  }
+  return(0)
+}
+```
+
+### Loading data from XML to data frames
+
+#### Loading author data frame
+```{r}
+AuthorList <- xpathSApply(xmlDOM, "//Article/AuthorList/Author")
+AuthCount <- xmlSize(AuthorList)
+for (i in 1:AuthCount)
+{
+  aAuthor <- AuthorList[i]
+  AuthorRow <- parseAuthor(aAuthor[[1]])
+  
+  pk.Author <- rowExists(AuthorRow, author.df)
+  if (pk.Author == 0)
+  {
+    # does not exist, so add
+    pk.Author <- nrow(author.df) + 1
+    author.df[pk.Author,1] <- pk.Author
+    author.df[pk.Author,2] <- AuthorRow[1]
+    author.df[pk.Author,3] <- AuthorRow[2]
+    author.df[pk.Author,4] <- AuthorRow[3]
+    author.df[pk.Author,5] <- AuthorRow[4]
+  }
+}
+```
+#### Loading article, journal and author_article data frame
+
+##### For article year and month we have used DateCreated node
+##### For journal publication date we have used PubMedPubDate node with status "pubmed"
+```{r}
+ArticleTitle <- xpathSApply(xmlDOM, "//Article/ArticleTitle")
+ArticleDate <- xpathSApply(xmlDOM, "//DateCreated")
+journalList <- xpathSApply(xmlDOM, "//Article/Journal")
+PubMedPubDate <- xpathSApply(xmlDOM, "//PubmedData/History/PubMedPubDate[@PubStatus = 'pubmed']")
+AuthorList <- xpathSApply(xmlDOM, "//PubmedArticle/MedlineCitation/Article/AuthorList")
+
+for (i in 1:numOfRows)
+{
+  article.df[nrow(article.df)+1,] <- NA
+  article.df$article_id[i] <- i
+  article.df$title[i] <- xmlValue(ArticleTitle[i])
+  article.df$article_year[i] <- xmlValue(ArticleDate[[i]]['Year'][[1]])
+  article.df$article_month[i] <- xmlValue(ArticleDate[[i]][['Month']])
+  
+  # get next journal node
+  aJournal <- journalList[i]
+  JournalRow <- parseJournal(aJournal[[1]])
+  year <- xmlValue(PubMedPubDate[[i]]['Year'][[1]])
+  month <- xmlValue(PubMedPubDate[[i]]['Month'][[1]])
+  day <- xmlValue(PubMedPubDate[[i]]['Day'][[1]])
+  date <- paste(year,month,day, sep="-")
+
+  pk.Journal <- rowExistsJ(JournalRow, journal.df)
+  if (pk.Journal == 0)
+  {
+    # does not exist, so add
+    pk.Journal <- nrow(journal.df) + 1
+    journal.df[pk.Journal,1] <- JournalRow[1]
+    journal.df[pk.Journal,2] <- JournalRow[2]
+    journal.df[pk.Journal,3] <- JournalRow[3]
+    journal.df[pk.Journal,4] <- JournalRow[4]
+    journal.df[pk.Journal,5] <- date
+  }
+  article.df$jid[i] <- JournalRow[[1]]
+  
+  # populate author_article dataframe
+  for (j in 1:xmlSize(AuthorList[[i]]))
+  {
+    author_article.df[nrow(author_article.df)+1,] <- NA
+    count <- nrow(author_article.df)
+    author_article.df$article_id[count] <- i
+    authRow <- parseAuthor(AuthorList[[i]][[j]])
+    authRef <- rowExists(authRow, author.df)
+    author_article.df$aid[count] <- authRef
+  }
+  
+}
+```
+
+### Write dataframe to SQLite Database
+```{r}
+dbWriteTable(dbcon, value = author.df, name = "Author", append = TRUE, row.names = FALSE) 
+dbWriteTable(dbcon, value = journal.df, name = "Journal", append = TRUE, row.names = FALSE) 
+dbWriteTable(dbcon, value = article.df, name = "Article", append = TRUE, row.names = FALSE) 
+dbWriteTable(dbcon, value = author_article.df, name = "Author_Article", append = TRUE, row.names = FALSE) 
+```
+
+### Displaying loaded tables
+
+```{sql connection=dbcon}
+select * from Author;
+```
+
+```{sql connection=dbcon}
+select * from Journal;
+```
+
+```{sql connection=dbcon}
+select * from Article;
+```
+
+```{sql connection=dbcon}
+select * from Author_Article;
+```
+
+### Disconnecting from database
+
+```{r}
+dbDisconnect(dbcon)
+```

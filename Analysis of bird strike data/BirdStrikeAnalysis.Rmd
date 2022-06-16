@@ -1,0 +1,428 @@
+---
+title: "Practicum 1 - Bird Strikes"
+author:
+- Rakshika Raju, raju.r@northeastern.edu
+- Pranith Rao Nayeneni, nayeneni.p@northeastern.edu
+output:
+  html_document:
+    df_print: paged
+---
+
+### Loading MySQL package and connecting to MySQL database
+```{r echo=FALSE}
+# 1. Library
+install.packages("RMySQL")
+require(RMySQL)
+
+# 2. Settings
+db_user <- 'admin'
+db_password <- 'password'
+db_name <- 'bird_strikes'
+db_host <- 'localhost'
+db_port <- 3306
+
+# 3. Read data from db
+mydb <-  dbConnect(MySQL(), user = db_user, password = db_password,
+                 dbname = db_name, host = db_host, port = db_port)
+```
+
+### Dropping all tables if they already exist
+```{sql connection=mydb}
+DROP TABLE IF EXISTS incident;
+```
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS flight_phase;
+```
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS aircraft;
+```
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS airline;
+```
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS weather_condition;
+```
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS airport;
+```
+
+### 1
+### Creating the database schema
+```{sql connection=mydb}
+CREATE TABLE airport (
+aid int NOT NULL AUTO_INCREMENT,
+airportName VARCHAR(255) NOT NULL DEFAULT "Unknown",
+airportCode VARCHAR(255) NOT NULL DEFAULT "Unknown",
+state VARCHAR(255) NOT NULL DEFAULT "Unknown",
+PRIMARY KEY (aid)
+);
+```
+
+#### Note: Using the table name as weather_condition as 'condition' is a keyword
+```{sql connection=mydb}
+CREATE TABLE weather_condition (
+cid int NOT NULL AUTO_INCREMENT,
+`condition` TEXT NOT NULL,
+explanation VARCHAR(255) DEFAULT "None",
+PRIMARY KEY (cid)
+);
+```
+
+```{sql connection=mydb}
+CREATE TABLE airline (
+airlineID int NOT NULL AUTO_INCREMENT,
+airlineName TEXT NOT NULL,
+PRIMARY KEY (airlineID)
+);
+```
+
+```{sql connection=mydb}
+CREATE TABLE aircraft (
+aircraftID int NOT NULL AUTO_INCREMENT,
+makeModel TEXT NOT NULL,
+PRIMARY KEY (aircraftID)
+);
+```
+
+```{sql connection=mydb}
+CREATE TABLE flight_phase (
+flightPhaseID INT NOT NULL AUTO_INCREMENT,
+flightPhaseName TEXT NOT NULL,
+PRIMARY KEY (flightPhaseID)
+)
+```
+
+```{sql connection=mydb}
+CREATE TABLE incident (
+iid INT NOT NULL,
+`date` DATE,
+origin INT NOT NULL,
+airline INT NOT NULL,
+aircraft INT NOT NULL,
+flightPhase INT NOT NULL,
+impact BOOLEAN NOT NULL DEFAULT FALSE,
+cond INT NOT NULL,
+PRIMARY KEY (iid),
+FOREIGN KEY (origin) REFERENCES airport (aid),
+FOREIGN KEY (airline) REFERENCES airline (airlineID),
+FOREIGN KEY (aircraft) REFERENCES aircraft (aircraftID),
+FOREIGN KEY (flightPhase) REFERENCES flight_phase (flightPhaseID),
+FOREIGN KEY (cond) REFERENCES weather_condition (cid)
+);
+```
+
+### 2
+### Installing and loading the 'sqldf' package
+```{r}
+install.packages("sqldf")
+library(sqldf)
+```
+
+```{r}
+options(sqldf.driver = "SQLite")
+```
+
+### Loading the CSV file to a data frame
+```{r}
+df.raw <- read.csv("BirdStrikesData.csv", header = TRUE, stringsAsFactors = FALSE) 
+
+# Special character is getting inserted by default from CSV so correcting the name
+names(df.raw)[names(df.raw) == "ï..Record.ID"] <- "Record.ID"
+```
+
+### Creating the dataframe for airport table
+```{r}
+airport.df <- df.raw[, c("Airport..Name", "Origin.State")]
+unknown.row <- c("", "")
+airport.df <- rbind(airport.df, unknown.row)
+
+df.airport <- sqldf("select 1 as aid, `Airport..Name` as airportName, `Origin.State` as state from `airport.df` group by `Origin.State`, `Airport..Name`")
+
+n.airport <- nrow(df.airport)
+df.airport[,1] <- seq(1, n.airport)
+df.airport[1,2] <- "Unknown"
+df.airport[1,3] <- "Unknown"
+df.airport 
+```
+
+### Creating the dataframe for weather_condition table 
+```{r}
+df.condition <- sqldf("select 1 as cid, `Conditions..Sky` as condition from `df.raw` group by `Conditions..Sky`")
+n.condition <- nrow(df.condition)
+df.condition[,1] <- seq(1, n.condition)
+df.condition[, "explanation"] = NA
+df.condition
+```
+
+### Creating the dataframe for airline table 
+```{r}
+df.airline2 <- sqldf("select 1 as airlineID, `Aircraft..Airline.Operator` as airlineName from `df.raw` group by `Aircraft..Airline.Operator`")
+df.airline <- df.airline2[!(df.airline2$airlineName=="MILITARY"),]
+n.airline <- nrow(df.airline)
+df.airline[,1] <- seq(1, n.airline)
+df.airline[1,2] <- "Unknown"
+df.airline
+```
+
+
+### Creating the dataframe for aircraft table 
+```{r}
+df.aircraft <- sqldf("select 1 as aircraftID, `Aircraft..Make.Model` as makeModel from `df.raw` group by `Aircraft..Make.Model`")
+n.aircraft <- nrow(df.aircraft)
+df.aircraft[,1] <- seq(1, n.aircraft)
+df.aircraft[1,2] <- "Unknown"
+df.aircraft
+```
+
+### Creating the dataframe for flight_phase table 
+```{r}
+flightPhaseID <- c(1, 2, 3, 4)
+flightPhaseName <- c("unknown", "takeoff", "landing", "inflight")
+df.fp <- data.frame(flightPhaseID, flightPhaseName)
+df.fp
+```
+
+
+### Creating the dataframe for incidents table 
+#### Removing the rows where date is empty or when the airline is a military airline
+```{r}
+df.incidents <- sqldf("select `Record.ID` as iid, `FlightDate` as `date`, `Airport..Name` as origin, `Origin.State` as originState, `Aircraft..Airline.Operator` as airline, `Aircraft..Make.Model` as aircraft, `When..Phase.of.flight` as flightPhase, `Effect..Indicated.Damage` as impact, `Conditions..Sky` as cond from `df.raw` where `date` IS NOT \"\" AND airline NOT IN (\"MILITARY\", \"Military\", \"military\")")
+
+df.incidents$date <- as.Date(df.incidents$date, format = "%m/%d/%Y")
+```
+
+#### Modifying the values of the column 'impact' to be a boolean
+```{r}
+df.incidents$impact[df.incidents$impact == "Caused damage"] <- 1
+df.incidents$impact[df.incidents$impact == "No damage"] <- 0
+```
+
+#### Harmonizing the flight phases to be one of landing(3), takeoff(2), inflight(4) and unknown(1).
+```{r}
+df.incidents$flightPhase[df.incidents$flightPhase == "Approach"] <- 3
+df.incidents$flightPhase[df.incidents$flightPhase == "Descent"] <- 3
+df.incidents$flightPhase[df.incidents$flightPhase == "Landing Roll"] <- 3
+df.incidents$flightPhase[df.incidents$flightPhase == "Taxi"] <- 3
+df.incidents$flightPhase[df.incidents$flightPhase == "Climb"] <- 2
+df.incidents$flightPhase[df.incidents$flightPhase == "Parked"] <- 2
+df.incidents$flightPhase[df.incidents$flightPhase == "Take-off run"] <- 2
+df.incidents$flightPhase[df.incidents$flightPhase == ""] <- 1
+```
+
+```{r}
+df.incidents.copy <- df.incidents
+```
+
+#### Creating foreign key relationships between the incident table and the other tables by replacing the values with their corresponding ids.
+```{r}
+n.incidents <- nrow(df.incidents.copy)
+for (r in 1:n.incidents) {
+
+a <- df.airport$aid[which(df.airport$`airportName` == df.incidents.copy$origin[r] & df.airport$`state` == df.incidents.copy$originState[r])]
+if(length(a) == 0){
+df.incidents$origin[r] <- 1;
+} else {
+df.incidents$origin[r] <- a;
+}
+
+b <- df.airline$airlineID[which(df.airline$`airlineName` == df.incidents.copy$airline[r])]
+if(length(b) == 0){
+df.incidents$airline[r] <- 1;
+} else {
+df.incidents$airline[r] <- b;
+}
+
+c <- df.aircraft$aircraftID[which(df.aircraft$`makeModel` == df.incidents.copy$aircraft[r])]
+if(length(c) == 0){
+df.incidents$aircraft[r] <- 1;
+} else {
+df.incidents$aircraft[r] <- c
+}
+
+d <- df.condition$cid[which(df.condition$`condition` == df.incidents.copy$cond[r])]
+if(length(d) == 0){
+df.incidents$cond[r] <- 1;
+} else {
+df.incidents$cond[r] <- d
+}
+}
+```
+
+#### Removing extra data
+```{r}
+df.incidents = subset(df.incidents, select = -c(originState) )
+df.incidents
+```
+
+
+```{r}
+dbSendQuery(mydb, "SET GLOBAL local_infile = true;")
+```
+### Inserting the 'airport' table into the database
+```{r}
+dbWriteTable(mydb, value = df.airport, name = "airport", append = TRUE, row.names = FALSE) 
+```
+### Inserting the 'aircraft' table into the database
+```{r}
+dbWriteTable(mydb, value = df.aircraft, name = "aircraft", append = TRUE, row.names = FALSE) 
+```
+### Inserting the 'weather_condition' table into the database
+```{r}
+dbWriteTable(mydb, value = df.condition, name = "weather_condition", append = TRUE, row.names = FALSE) 
+```
+### Inserting the 'airline' table into the database
+```{r}
+dbWriteTable(mydb, value = df.airline, name = "airline", append = TRUE, row.names = FALSE) 
+```
+### Inserting the 'flight_phase' table into the database
+```{r}
+dbWriteTable(mydb, value = df.fp, name = "flight_phase", append = TRUE, row.names = FALSE) 
+```
+### Inserting the 'incident' table into the database
+```{r}
+dbWriteTable(mydb, value = df.incidents, name = "incident", append = TRUE, row.names = FALSE) 
+```
+
+### 3
+### Displaying the inserted tables.
+
+```{sql connection=mydb}
+SELECT * FROM airport LIMIT 20;
+```
+
+```{sql connection=mydb}
+SELECT * FROM aircraft LIMIT 20;
+```
+
+```{sql connection=mydb}
+SELECT * FROM weather_condition;
+```
+
+```{sql connection=mydb}
+SELECT * FROM airline LIMIT 20;
+```
+
+```{sql connection=mydb}
+SELECT * FROM flight_phase;
+```
+
+```{sql connection=mydb}
+SELECT * FROM incident LIMIT 20;
+```
+
+### 4
+### SQL query to find the number of bird strike incidents for each flight phase 
+```{sql connection=mydb}
+SELECT flight_phase.flightPhaseName, count(*) AS Average from incident, flight_phase 
+WHERE incident.flightPhase = flight_phase.flightPhaseID 
+GROUP BY incident.flightPhase;
+```
+
+
+
+### Average for reference
+```{sql connection=mydb}
+SELECT count(*) / (SELECT count(*) FROM flight_phase) AS TotalAverage FROM incident;
+```
+
+### 5
+### SQL Query to find the flight phases that have above average bird strike incident.
+```{sql connection=mydb}
+ SELECT A.flightPhase, flight_phase.flightPhaseName, A.Average FROM (
+ SELECT flightPhase, count(*) AS Average, (count(*) > ( SELECT count(*) / (SELECT count(*) FROM flight_phase) FROM incident)) AS greater
+ FROM incident 
+ GROUP BY incident.flightPhase) A, flight_phase
+ WHERE A.greater = 1 AND A.flightPhase = flight_phase.flightPhaseID;
+```
+
+### 6
+### SQL Query to find the average number of bird strike incidents by month (across all years)
+```{sql connection=mydb}
+SELECT month(date) AS Month, count(*)/12 AS Average 
+FROM incident 
+GROUP BY month(date) 
+ORDER BY month(date);
+```
+
+
+### 7
+### Column chart to visualize the number of bird strike incidents per year from 2005 to 2011.
+```{sql connection=mydb, output.var="numberOfIncidents"}
+SELECT YEAR(`date`) as incidentYear
+FROM bird_strikes.incident 
+WHERE YEAR(`date`) BETWEEN 2005 AND 2011
+```
+
+```{r}
+barplot(table(numberOfIncidents),
+main="Number of Bird Strike Incidents per year between 2005 and 2011",
+xlab="Year",
+ylab="Number of Incidents",
+border="red",
+col="blue",
+density=10
+)
+```
+
+### 8
+### Stored procedure to add new bird strike incident to the database. 
+```{sql connection=mydb}
+DROP PROCEDURE IF EXISTS insert_incident;
+```
+
+```{sql connection=mydb}
+Create PROCEDURE insert_incident(IN id int, IN dateOfIncident DATE, IN airportNameNew TEXT, IN airportStateNew TEXT, IN airlineNew TEXT, IN aircraftNew TEXT, IN flightPhaseNew TEXT, IN impactNew BOOLEAN, IN condNew TEXT)
+BEGIN
+
+SET @airlineValue = (SELECT airlineID FROM airline WHERE airlineName = airlineNew);
+SET @aircraftValue = (SELECT aircraftID FROM aircraft WHERE makeModel = aircraftNew);
+SET @flightPhaseValue = (SELECT flightPhaseID FROM flight_phase WHERE flightPhaseName = flightPhaseNew);
+SET @condValue = (SELECT cid FROM weather_condition WHERE `condition` = condNew);
+SET @airportID = (SELECT aid FROM airport WHERE airportName = airportNameNew AND state = airportStateNew);
+
+IF @airportID IS NOT NULL THEN
+INSERT INTO incident (iid, `date`, origin, airline, aircraft, flightPhase, impact, cond) VALUES (id, dateOfIncident, @airportID, @airlineValue, @aircraftValue, @flightPhaseValue, impactNew, @condValue);
+ELSE
+INSERT INTO airport (airportName, airportCode, state) VALUES (airportNameNew, "Unknown", airportStateNew);
+SET @airportIDNew = (SELECT aid FROM airport WHERE airportName = airportNameNew AND state = airportStateNew);
+INSERT INTO incident (iid, `date`, origin, airline, aircraft, flightPhase, impact, cond) VALUES (id, dateOfIncident, @airportIDNew, @airlineValue, @aircraftValue, @flightPhaseValue, impactNew, @condValue);
+END IF;
+
+END
+```
+
+### Testing 'insert_incident' stored procedure for an existing airport
+```{sql connection=mydb}
+CALL insert_incident(18101998, "2008/10/18", "BESSEMER ARPT", "Alabama", "AMERICA WEST AIRLINES", "B-737-200", "landing", FALSE, "Overcast");
+```
+
+```{sql connection=mydb}
+SELECT * FROM incident where iid = 18101998;
+```
+
+
+### Testing 'insert_incident' stored procedure for a non existing airport
+```{sql connection=mydb}
+CALL insert_incident(19101998, "2010/10/19", "NEU AIRPORT", "MA", "AMERICA WEST AIRLINES", "B-737-200", "landing", FALSE, "Overcast");
+```
+
+#### Checking if the new airport is added to the 'airport' table
+```{sql connection=mydb}
+SELECT * FROM airport where airportName = "NEU AIRPORT";
+```
+
+```{sql connection=mydb}
+SELECT * FROM incident where iid = 19101998;
+```
+
+### Disconnecting from the database
+```{r}
+dbDisconnect(mydb)
+```
+
+
